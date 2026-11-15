@@ -15,6 +15,9 @@ Project/DebugConfig/
 *.build_log.htm
 *.uvguix.*
 *.uvoptx.bak
+*.elf
+*.lib
+*.obj
 
 # IDE / OS
 .vs/
