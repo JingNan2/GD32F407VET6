@@ -1037,10 +1037,10 @@
 #define LV_FONT_MONTSERRAT_14 1
 
 /** Montserrat 16 */
-#define LV_FONT_MONTSERRAT_16 0
+#define LV_FONT_MONTSERRAT_16 1
 
 /** Montserrat 18 */
-#define LV_FONT_MONTSERRAT_18 0
+#define LV_FONT_MONTSERRAT_18 1
 
 /** Montserrat 20 */
 #define LV_FONT_MONTSERRAT_20 0
@@ -1055,7 +1055,7 @@
 #define LV_FONT_MONTSERRAT_26 0
 
 /** Montserrat 28 */
-#define LV_FONT_MONTSERRAT_28 0
+#define LV_FONT_MONTSERRAT_28 1
 
 /** Montserrat 30 */
 #define LV_FONT_MONTSERRAT_30 0
@@ -1079,7 +1079,7 @@
 #define LV_FONT_MONTSERRAT_42 0
 
 /** Montserrat 44 */
-#define LV_FONT_MONTSERRAT_44 0
+#define LV_FONT_MONTSERRAT_44 1
 
 /** Montserrat 46 */
 #define LV_FONT_MONTSERRAT_46 0
@@ -2068,11 +2068,11 @@
 #endif /*LV_USE_FS_FROGFS*/
 
 /** Reach data already in memory through the lv_fs API, without a real file system. */
-#define LV_USE_FS_MEMFS 0
+#define LV_USE_FS_MEMFS 1
 
 #if LV_USE_FS_MEMFS
 /** Drive letter for memfs (65 = 'A', 0 = disabled) */
-#define LV_FS_MEMFS_LETTER 0
+#define LV_FS_MEMFS_LETTER 'M'
 
 #endif /*LV_USE_FS_MEMFS*/
 

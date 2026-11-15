@@ -17,6 +17,8 @@
 #include "bsp_usb_msc.h"
 #include "bsp_spi0_bus.h"
 #include "bsp_spi_flash.h"
+#include "bsp_efs.h"
+#include "bsp_lv_fs_efs.h"
 #include "bsp_st7789.h"
 #include "bsp_cst816.h"
 #include "bsp_lvgl.h"

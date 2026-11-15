@@ -1,22 +1,31 @@
 /*!
     \file    bsp_spi_flash.c
     \brief   ZD25Q32D SPI Flash（指令兼容 W25Q32）
-             经 bsp_spi0_bus 与 LCD 分时共用 SPI0 DMA（Flash 优先）
+             命令/状态用轮询 SPI；大数据才走 DMA
 */
 
 #include "bsp_spi_flash.h"
 #include "bsp_spi0_bus.h"
 #include "board.h"
+#include "systick.h"
+#include <stdio.h>
 
 #define CMD_WREN          0x06U
+#define CMD_WRDI          0x04U
 #define CMD_RDSR1         0x05U
+#define CMD_WRSR          0x01U
 #define CMD_READ          0x03U
 #define CMD_PAGE_PROG     0x02U
 #define CMD_SECTOR_ERASE  0x20U
 #define CMD_BLOCK_ERASE   0xD8U
 #define CMD_CHIP_ERASE    0xC7U
 #define CMD_RDID          0x9FU
+
 #define SR_BUSY           0x01U
+#define SR_WEL            0x02U
+
+#define FLASH_BUSY_TO_MS  5000U   /* 扇区擦除一般 <400ms */
+#define FLASH_CHIP_TO_MS  120000U
 
 static uint8_t s_ready = 0U;
 
@@ -42,23 +51,21 @@ static void flash_end(void)
     bsp_spi0_bus_release(SPI0_BUS_FLASH);
 }
 
-static uint8_t spi_dma_xfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
+static uint8_t flash_tx(uint8_t b)
 {
-    return (SPI0_BUS_OK == bsp_spi0_bus_dma_xfer(tx, rx, len)) ? SPI_FLASH_OK : SPI_FLASH_ERROR;
+    return bsp_spi0_bus_xfer_byte(b, NULL);
 }
 
-static uint8_t spi_write_read_byte(uint8_t data)
+static uint8_t flash_txrx(uint8_t b, uint8_t *rx)
 {
-    uint8_t rx = 0U;
-    (void)spi_dma_xfer(&data, &rx, 1U);
-    return rx;
+    return bsp_spi0_bus_xfer_byte(b, rx);
 }
 
 static uint8_t flash_write_enable(void)
 {
-    uint8_t cmd = CMD_WREN;
+    cs_high();
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(&cmd, NULL, 1U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_WREN)) {
         cs_high();
         return SPI_FLASH_ERROR;
     }
@@ -66,29 +73,88 @@ static uint8_t flash_write_enable(void)
     return SPI_FLASH_OK;
 }
 
-uint8_t bsp_spi_flash_wait_busy(void)
+static uint8_t flash_read_sr1(uint8_t *sr)
 {
-    uint8_t sr;
-    uint8_t cmd = CMD_RDSR1;
-    uint32_t timeout = 0xFFFFFFU;
+    uint8_t v = 0xFFU;
 
+    cs_low();
+    if(SPI0_BUS_OK != flash_tx(CMD_RDSR1)) {
+        cs_high();
+        return SPI_FLASH_ERROR;
+    }
+    if(SPI0_BUS_OK != flash_txrx(0xFFU, &v)) {
+        cs_high();
+        return SPI_FLASH_ERROR;
+    }
+    cs_high();
+    *sr = v;
+    return SPI_FLASH_OK;
+}
+
+/*! 调用方已持有总线；擦除命令后 CS 已拉高 */
+static uint8_t flash_wait_busy_held(uint32_t timeout_ms)
+{
+    uint32_t t0 = sys_tick_get();
+    uint8_t sr;
+
+    for(;;) {
+        if(SPI_FLASH_OK != flash_read_sr1(&sr)) {
+            return SPI_FLASH_ERROR;
+        }
+        if(0U == (sr & SR_BUSY)) {
+            return SPI_FLASH_OK;
+        }
+        if(0U != sys_tick_expired(t0, timeout_ms)) {
+            printf("[FLASH] busy timeout sr=0x%02X\r\n", sr);
+            return SPI_FLASH_ERROR;
+        }
+    }
+}
+
+static uint8_t flash_wait_busy(uint32_t timeout_ms)
+{
     if(SPI0_BUS_OK != flash_begin()) {
         return SPI_FLASH_ERROR;
     }
-
-    do {
-        cs_low();
-        (void)spi_dma_xfer(&cmd, NULL, 1U);
-        sr = spi_write_read_byte(0xFFU);
-        cs_high();
-        if(0U == (sr & SR_BUSY)) {
-            flash_end();
-            return SPI_FLASH_OK;
-        }
-    } while(--timeout);
-
+    if(SPI_FLASH_OK != flash_wait_busy_held(timeout_ms)) {
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
     flash_end();
-    return SPI_FLASH_ERROR;
+    return SPI_FLASH_OK;
+}
+
+/* 解除块保护，避免扇区擦除被状态寄存器拦住 */
+static uint8_t flash_clear_protect(void)
+{
+    uint8_t sr = 0U;
+
+    if(SPI_FLASH_OK != flash_write_enable()) {
+        return SPI_FLASH_ERROR;
+    }
+    cs_low();
+    if(SPI0_BUS_OK != flash_tx(CMD_WRSR)) {
+        cs_high();
+        return SPI_FLASH_ERROR;
+    }
+    if(SPI0_BUS_OK != flash_tx(0x00U)) { /* 清 BP/SRP */
+        cs_high();
+        return SPI_FLASH_ERROR;
+    }
+    cs_high();
+    if(SPI_FLASH_OK != flash_wait_busy_held(FLASH_BUSY_TO_MS)) {
+        return SPI_FLASH_ERROR;
+    }
+    if(SPI_FLASH_OK != flash_read_sr1(&sr)) {
+        return SPI_FLASH_ERROR;
+    }
+    printf("[FLASH] SR1=0x%02X after unprotect\r\n", sr);
+    return SPI_FLASH_OK;
+}
+
+uint8_t bsp_spi_flash_wait_busy(void)
+{
+    return flash_wait_busy(FLASH_BUSY_TO_MS);
 }
 
 uint8_t bsp_spi_flash_init(void)
@@ -105,24 +171,28 @@ uint8_t bsp_spi_flash_init(void)
         return SPI_FLASH_ERROR;
     }
 
+    if(SPI0_BUS_OK != flash_begin()) {
+        return SPI_FLASH_ERROR;
+    }
+    (void)flash_clear_protect();
+    flash_end();
+
     s_ready = 1U;
     return SPI_FLASH_OK;
 }
 
 uint8_t bsp_spi_flash_read_id(uint8_t *mid, uint8_t *mem_type, uint8_t *capacity)
 {
-    uint8_t cmd = CMD_RDID;
     uint8_t id[3] = {0};
 
     if(SPI0_BUS_OK != flash_begin()) {
         return SPI_FLASH_ERROR;
     }
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(&cmd, NULL, 1U)) {
-        flash_end();
-        return SPI_FLASH_ERROR;
-    }
-    if(SPI_FLASH_OK != spi_dma_xfer(NULL, id, 3U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_RDID) ||
+       SPI0_BUS_OK != flash_txrx(0xFFU, &id[0]) ||
+       SPI0_BUS_OK != flash_txrx(0xFFU, &id[1]) ||
+       SPI0_BUS_OK != flash_txrx(0xFFU, &id[2])) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
@@ -142,26 +212,23 @@ uint8_t bsp_spi_flash_read_id(uint8_t *mid, uint8_t *mem_type, uint8_t *capacity
 
 uint8_t bsp_spi_flash_read(uint32_t addr, uint8_t *buf, uint32_t len)
 {
-    uint8_t hdr[4];
-
     if((0U == s_ready) || (NULL == buf) || (0U == len) || ((addr + len) > SPI_FLASH_SIZE)) {
         return SPI_FLASH_ERROR;
     }
-
-    hdr[0] = CMD_READ;
-    hdr[1] = (uint8_t)(addr >> 16);
-    hdr[2] = (uint8_t)(addr >> 8);
-    hdr[3] = (uint8_t)(addr);
 
     if(SPI0_BUS_OK != flash_begin()) {
         return SPI_FLASH_ERROR;
     }
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(hdr, NULL, 4U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_READ) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 16)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 8)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)addr)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
-    if(SPI_FLASH_OK != spi_dma_xfer(NULL, buf, len)) {
+    /* 大数据用 DMA */
+    if(SPI0_BUS_OK != bsp_spi0_bus_dma_xfer(NULL, buf, len)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
@@ -171,7 +238,7 @@ uint8_t bsp_spi_flash_read(uint32_t addr, uint8_t *buf, uint32_t len)
 
 uint8_t bsp_spi_flash_page_program(uint32_t addr, const uint8_t *buf, uint32_t len)
 {
-    uint8_t hdr[4];
+    uint8_t sr = 0U;
 
     if((0U == s_ready) || (NULL == buf) || (0U == len) || (len > SPI_FLASH_PAGE_SIZE) ||
        ((addr + len) > SPI_FLASH_SIZE) ||
@@ -186,25 +253,31 @@ uint8_t bsp_spi_flash_page_program(uint32_t addr, const uint8_t *buf, uint32_t l
         flash_end();
         return SPI_FLASH_ERROR;
     }
-
-    hdr[0] = CMD_PAGE_PROG;
-    hdr[1] = (uint8_t)(addr >> 16);
-    hdr[2] = (uint8_t)(addr >> 8);
-    hdr[3] = (uint8_t)(addr);
-
-    cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(hdr, NULL, 4U)) {
+    if(SPI_FLASH_OK != flash_read_sr1(&sr) || (0U == (sr & SR_WEL))) {
+        printf("[FLASH] WEL not set sr=0x%02X\r\n", sr);
         flash_end();
         return SPI_FLASH_ERROR;
     }
-    if(SPI_FLASH_OK != spi_dma_xfer(buf, NULL, len)) {
+
+    cs_low();
+    if(SPI0_BUS_OK != flash_tx(CMD_PAGE_PROG) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 16)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 8)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)addr)) {
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
+    if(SPI0_BUS_OK != bsp_spi0_bus_dma_xfer(buf, NULL, len)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
     cs_high();
-    /* wait_busy 会再次 acquire —— 先 release */
+    if(SPI_FLASH_OK != flash_wait_busy_held(FLASH_BUSY_TO_MS)) {
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
     flash_end();
-    return bsp_spi_flash_wait_busy();
+    return SPI_FLASH_OK;
 }
 
 uint8_t bsp_spi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t len)
@@ -231,7 +304,7 @@ uint8_t bsp_spi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t len)
 
 uint8_t bsp_spi_flash_sector_erase(uint32_t addr)
 {
-    uint8_t hdr[4];
+    uint8_t sr = 0U;
 
     if((0U == s_ready) || (addr >= SPI_FLASH_SIZE)) {
         return SPI_FLASH_ERROR;
@@ -239,30 +312,41 @@ uint8_t bsp_spi_flash_sector_erase(uint32_t addr)
     addr &= ~(SPI_FLASH_SECTOR_SIZE - 1U);
 
     if(SPI0_BUS_OK != flash_begin()) {
+        printf("[FLASH] erase acquire fail\r\n");
         return SPI_FLASH_ERROR;
     }
     if(SPI_FLASH_OK != flash_write_enable()) {
+        printf("[FLASH] erase WREN fail\r\n");
         flash_end();
         return SPI_FLASH_ERROR;
     }
-    hdr[0] = CMD_SECTOR_ERASE;
-    hdr[1] = (uint8_t)(addr >> 16);
-    hdr[2] = (uint8_t)(addr >> 8);
-    hdr[3] = (uint8_t)(addr);
+    if(SPI_FLASH_OK != flash_read_sr1(&sr) || (0U == (sr & SR_WEL))) {
+        printf("[FLASH] erase WEL fail sr=0x%02X\r\n", sr);
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
 
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(hdr, NULL, 4U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_SECTOR_ERASE) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 16)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 8)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)addr)) {
+        printf("[FLASH] erase cmd fail\r\n");
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
+    cs_high(); /* 拉高 CS 后芯片开始擦 */
+
+    if(SPI_FLASH_OK != flash_wait_busy_held(FLASH_BUSY_TO_MS)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
     flash_end();
-    return bsp_spi_flash_wait_busy();
+    return SPI_FLASH_OK;
 }
 
 uint8_t bsp_spi_flash_block_erase(uint32_t addr)
 {
-    uint8_t hdr[4];
-
     if((0U == s_ready) || (addr >= SPI_FLASH_SIZE)) {
         return SPI_FLASH_ERROR;
     }
@@ -275,24 +359,25 @@ uint8_t bsp_spi_flash_block_erase(uint32_t addr)
         flash_end();
         return SPI_FLASH_ERROR;
     }
-    hdr[0] = CMD_BLOCK_ERASE;
-    hdr[1] = (uint8_t)(addr >> 16);
-    hdr[2] = (uint8_t)(addr >> 8);
-    hdr[3] = (uint8_t)(addr);
-
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(hdr, NULL, 4U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_BLOCK_ERASE) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 16)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)(addr >> 8)) ||
+       SPI0_BUS_OK != flash_tx((uint8_t)addr)) {
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
+    cs_high();
+    if(SPI_FLASH_OK != flash_wait_busy_held(FLASH_BUSY_TO_MS)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
     flash_end();
-    return bsp_spi_flash_wait_busy();
+    return SPI_FLASH_OK;
 }
 
 uint8_t bsp_spi_flash_chip_erase(void)
 {
-    uint8_t cmd = CMD_CHIP_ERASE;
-
     if(0U == s_ready) {
         return SPI_FLASH_ERROR;
     }
@@ -304,10 +389,15 @@ uint8_t bsp_spi_flash_chip_erase(void)
         return SPI_FLASH_ERROR;
     }
     cs_low();
-    if(SPI_FLASH_OK != spi_dma_xfer(&cmd, NULL, 1U)) {
+    if(SPI0_BUS_OK != flash_tx(CMD_CHIP_ERASE)) {
+        flash_end();
+        return SPI_FLASH_ERROR;
+    }
+    cs_high();
+    if(SPI_FLASH_OK != flash_wait_busy_held(FLASH_CHIP_TO_MS)) {
         flash_end();
         return SPI_FLASH_ERROR;
     }
     flash_end();
-    return bsp_spi_flash_wait_busy();
+    return SPI_FLASH_OK;
 }

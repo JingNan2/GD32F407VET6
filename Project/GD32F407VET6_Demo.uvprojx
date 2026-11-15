@@ -430,6 +430,16 @@
               <FilePath>..\Platform\bsp_spi0_bus.c</FilePath>
             </File>
             <File>
+              <FileName>bsp_efs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Platform\bsp_efs.c</FilePath>
+            </File>
+            <File>
+              <FileName>bsp_lv_fs_efs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Platform\bsp_lv_fs_efs.c</FilePath>
+            </File>
+            <File>
               <FileName>bsp_spi_flash.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Platform\bsp_spi_flash.c</FilePath>

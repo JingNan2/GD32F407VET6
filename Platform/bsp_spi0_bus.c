@@ -106,14 +106,28 @@ uint8_t bsp_spi0_bus_acquire(spi0_bus_owner_t owner)
 
     if(SPI0_BUS_FLASH == owner) {
         s_flash_want = 1U;
-        while(SPI0_BUS_FREE != s_owner) {
-            os_yield();
+        /* 调度器未跑时 os_yield 为空操作，必须带超时，否则会死等卡死 */
+        {
+            uint32_t spins = 0U;
+            while(SPI0_BUS_FREE != s_owner) {
+                os_yield();
+                if(++spins > 2000000U) {
+                    s_flash_want = 0U;
+                    return SPI0_BUS_ERROR;
+                }
+            }
         }
         s_owner = SPI0_BUS_FLASH;
         s_flash_want = 0U;
     } else {
-        while((SPI0_BUS_FREE != s_owner) || (0U != s_flash_want)) {
-            os_yield();
+        {
+            uint32_t spins = 0U;
+            while((SPI0_BUS_FREE != s_owner) || (0U != s_flash_want)) {
+                os_yield();
+                if(++spins > 2000000U) {
+                    return SPI0_BUS_ERROR;
+                }
+            }
         }
         s_owner = SPI0_BUS_LCD;
     }
@@ -130,6 +144,37 @@ void bsp_spi0_bus_release(spi0_bus_owner_t owner)
         gpio_bit_set(BOARD_LCD_CS_PORT, BOARD_LCD_CS_PIN);
         s_owner = SPI0_BUS_FREE;
     }
+}
+
+uint8_t bsp_spi0_bus_xfer_byte(uint8_t tx, uint8_t *rx)
+{
+    uint32_t spi = BOARD_SPI_FLASH;
+    uint32_t timeout;
+    uint8_t b;
+
+    if(SPI0_BUS_FREE == s_owner) {
+        return SPI0_BUS_ERROR;
+    }
+
+    timeout = DMA_TIMEOUT;
+    while(RESET == spi_i2s_flag_get(spi, SPI_FLAG_TBE)) {
+        if(0U == (--timeout)) {
+            return SPI0_BUS_ERROR;
+        }
+    }
+    spi_i2s_data_transmit(spi, (uint16_t)tx);
+
+    timeout = DMA_TIMEOUT;
+    while(RESET == spi_i2s_flag_get(spi, SPI_FLAG_RBNE)) {
+        if(0U == (--timeout)) {
+            return SPI0_BUS_ERROR;
+        }
+    }
+    b = (uint8_t)spi_i2s_data_receive(spi);
+    if(NULL != rx) {
+        *rx = b;
+    }
+    return SPI0_BUS_OK;
 }
 
 uint8_t bsp_spi0_bus_write(const uint8_t *tx, uint32_t len)

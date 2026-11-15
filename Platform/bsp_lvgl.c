@@ -1,6 +1,6 @@
 /*!
     \file    bsp_lvgl.c
-    \brief   LVGL 移植：ST7789 + CST816 + 片内 RTC 指针表盘
+    \brief   LVGL：ST7789 + CST816 + 片内 RTC 指针表盘
 */
 
 #include "bsp_lvgl.h"
@@ -55,6 +55,9 @@ static const int16_t s_sin256[91] = {
 static uint8_t s_buf1[LVGL_HOR_RES * LVGL_BUF_LINES * 2U] __attribute__((aligned(4)));
 static uint8_t s_buf2[LVGL_HOR_RES * LVGL_BUF_LINES * 2U] __attribute__((aligned(4)));
 
+static uint8_t s_lvgl_first;
+static volatile uint8_t s_lvgl_paused;
+
 static uint32_t lvgl_tick_get(void)
 {
     return sys_tick_get();
@@ -97,10 +100,10 @@ static void hand_set(lv_point_precise_t pts[2], lv_obj_t *line, int16_t r, uint1
     int32_t y;
 
     polar_to_xy(r, deg, &x, &y);
-    pts[0].x = WATCH_CX;
-    pts[0].y = WATCH_CY;
-    pts[1].x = x;
-    pts[1].y = y;
+    pts[0].x = (lv_value_precise_t)WATCH_CX;
+    pts[0].y = (lv_value_precise_t)WATCH_CY;
+    pts[1].x = (lv_value_precise_t)x;
+    pts[1].y = (lv_value_precise_t)y;
     lv_line_set_points_mutable(line, pts, 2);
 }
 
@@ -156,10 +159,10 @@ static void add_tick(lv_obj_t *parent, uint16_t deg, int16_t r0, int16_t r1, int
     pts = pts_pool[idx++];
     polar_to_xy(r0, deg, &x0, &y0);
     polar_to_xy(r1, deg, &x1, &y1);
-    pts[0].x = x0;
-    pts[0].y = y0;
-    pts[1].x = x1;
-    pts[1].y = y1;
+    pts[0].x = (lv_value_precise_t)x0;
+    pts[0].y = (lv_value_precise_t)y0;
+    pts[1].x = (lv_value_precise_t)x1;
+    pts[1].y = (lv_value_precise_t)y1;
 
     line = lv_line_create(parent);
     lv_obj_remove_style_all(line);
@@ -231,6 +234,7 @@ static void lvgl_ui_create(void)
     lv_obj_remove_style_all(scr);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0B1020), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_set_scrollable(scr, false);
 
     /* 表盘圆 */
     dial = lv_obj_create(scr);
@@ -242,12 +246,13 @@ static void lvgl_ui_create(void)
     lv_obj_set_style_border_width(dial, 3, 0);
     lv_obj_set_style_border_color(dial, lv_color_hex(0x4CC9F0), 0);
     lv_obj_set_pos(dial, WATCH_CX - WATCH_R - 2, WATCH_CY - WATCH_R - 2);
+    lv_obj_set_scrollable(dial, false);
 
     /* 12 时刻度 */
     for(i = 0U; i < 12U; i++) {
         uint16_t deg = (uint16_t)(i * 30U);
         int16_t r_in = (0U == (i % 3U)) ? TICK_HOUR_INNER : TICK_INNER_R;
-        lv_coord_t tw = (0U == (i % 3U)) ? 3 : 2;
+        int32_t tw = (0U == (i % 3U)) ? 3 : 2;
         uint32_t col = (0U == (i % 3U)) ? 0xEAEAEAU : 0x6C757DU;
         add_tick(scr, deg, TICK_OUTER_R, r_in, tw, col);
     }
@@ -290,11 +295,18 @@ static void lvgl_ui_create(void)
 
     watch_update_hands();
     (void)lv_timer_create(watch_timer_cb, 200, NULL);
-
     lv_obj_invalidate(scr);
 }
 
-static uint8_t s_lvgl_first;
+void bsp_lvgl_pause(void)
+{
+    s_lvgl_paused = 1U;
+}
+
+void bsp_lvgl_resume(void)
+{
+    s_lvgl_paused = 0U;
+}
 
 static void lvgl_thread(void)
 {
@@ -308,11 +320,15 @@ static void lvgl_thread(void)
 
 #if (OS_PORT == OS_PORT_FREERTOS)
     for(;;) {
-        (void)lv_timer_handler();
+        if(0U == s_lvgl_paused) {
+            (void)lv_timer_handler();
+        }
         os_delay_ms(5U);
     }
 #else
-    (void)lv_timer_handler();
+    if(0U == s_lvgl_paused) {
+        (void)lv_timer_handler();
+    }
 #endif
 }
 
@@ -325,6 +341,7 @@ uint8_t bsp_lvgl_init(void)
     s_flush_dbg = 0U;
     s_last_tx = 0xFFFFU;
     s_last_ty = 0xFFFFU;
+    s_lvgl_paused = 0U;
 
     lv_init();
     lv_tick_set_cb(lvgl_tick_get);

@@ -14,7 +14,8 @@
 
 #define USART_PRINTF_BUF_SIZE  256U
 #define USART_DMA_TIMEOUT      0x1FFFFFU
-#define USART_RX_RING_SIZE     128U
+/* 115200 下扇区擦除可达数百 ms，必须能扛住突发；过小会导致 WriteFile 丢字节 */
+#define USART_RX_RING_SIZE     8192U
 
 static uint8_t  s_printf_buf[USART_PRINTF_BUF_SIZE];
 static uint16_t s_printf_len = 0U;

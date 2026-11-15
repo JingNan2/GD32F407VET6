@@ -11,6 +11,7 @@
 #include "bsp_sdcard.h"
 #include "bsp_usb_msc.h"
 #include "bsp_spi_flash.h"
+#include "bsp_efs.h"
 #include "bsp_st7789.h"
 #include "bsp_cst816.h"
 #include "bsp_lvgl.h"
@@ -226,7 +227,7 @@ void app_init(void)
     os_task_add(task_button, 10U);
     os_task_add(task_ntc, 100U);
     os_task_add(task_sd_detect, 50U); /* TF DET 防抖 + 插拔事件 */
-    os_task_add(app_cli_task, 20U);   /* 串口指令树 */
+    os_task_add(app_cli_task, 5U);    /* 串口指令树（写文件需更勤轮询） */
     /* 触摸改由 LVGL indev 处理 */
 
     s_pot_raw = 0U;
@@ -245,6 +246,11 @@ void app_init(void)
     bsp_nixie_show_right(0U, 1U);
 
     app_cli_init();
+
+    /* 外置 Flash 文件表（映射表在 SPI Flash 首扇区） */
+    if(EFS_OK != bsp_efs_init()) {
+        printf("[EFS] init fail\r\n");
+    }
 
     bsp_sd_detect_init();
     tf_card_selftest();
@@ -295,11 +301,7 @@ void app_init(void)
 
         printf("[LCD] ST7789 SPI0+DMA init...\r\n");
         bsp_st7789_init();
-        /* 先刷纯色确认面板通路（应短暂见红） */
-        bsp_st7789_fill(ST7789_RED);
-        delay_1ms(200U);
-        bsp_st7789_fill(ST7789_BLACK);
-        printf("[LCD] ready (red selftest done)\r\n");
+        printf("[LCD] ready\r\n");
 
         printf("[TP] CST816 I2C PB6/7 init...\r\n");
         if(CST816_OK != bsp_cst816_init()) {

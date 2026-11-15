@@ -21,6 +21,8 @@ void    bsp_spi0_bus_release(spi0_bus_owner_t owner);
 uint8_t bsp_spi0_bus_dma_xfer(const uint8_t *tx, uint8_t *rx, uint32_t len);
 /*! LCD 专用高速写：CPU 喂 SPI，无 DMA 重建开销，可达时钟上限 */
 uint8_t bsp_spi0_bus_write(const uint8_t *tx, uint32_t len);
+/*! 全双工轮询收发 1 字节（Flash 命令/读状态更稳） */
+uint8_t bsp_spi0_bus_xfer_byte(uint8_t tx, uint8_t *rx);
 uint8_t bsp_spi0_bus_flash_pending(void);
 
 #endif /* BSP_SPI0_BUS_H */

@@ -33,3 +33,7 @@ Desktop.ini
 *.tmp
 *~
 __pycache__/
+
+# J-Link / debugger
+Project/JLinkLog.txt
+Project/JLinkSettings.ini
