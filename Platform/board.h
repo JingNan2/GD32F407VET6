@@ -5,7 +5,10 @@
 
 /* ========== 调试串口 USART0（官方 Printf + DMA 例程） ========== */
 /* PA9=TX  PA10=RX  AF7  115200 8N1 */
-/* TX: DMA1_CH7 SUBPERI4；RX 暂不用 DMA（CH2 给 SPI0 Flash/LCD） */
+/* TX: DMA1_CH7 SUBPERI4
+ * RX: DMA1_CH2 SUBPERI4 —— 仅 WriteFile 高速模式占用；平时 CH2 给 SPI0 Flash/LCD
+ *     高速模式期间 Flash 走轮询，避免与 USART RX DMA 抢 CH2
+ */
 #define BOARD_USART                 USART0
 #define BOARD_USART_CLK             RCU_USART0
 #define BOARD_USART_IRQn            USART0_IRQn
@@ -18,7 +21,7 @@
 #define BOARD_USART_DMA             DMA1
 #define BOARD_USART_DMA_CLK         RCU_DMA1
 #define BOARD_USART_DMA_TX_CH       DMA_CH7
-#define BOARD_USART_DMA_RX_CH       DMA_CH2 /* 保留宏，当前未启用 RX DMA */
+#define BOARD_USART_DMA_RX_CH       DMA_CH2
 #define BOARD_USART_DMA_SUBPERI     DMA_SUBPERI4
 #define BOARD_USART_DATA_ADDR       ((uint32_t)&USART_DATA(USART0))
 

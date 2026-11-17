@@ -17,7 +17,7 @@
 #define CLI_LINE_MAX          96U
 #define CLI_UPDATE_MS        30000U
 #define CLI_IDLE_SUBMIT_MS    100U
-#define CLI_WRITE_CHUNK       1024U
+#define CLI_WRITE_CHUNK       4096U   /* DMA 批量落盘，减少 Flash 次数 */
 #define CLI_WRITE_START_TO_MS 30000U
 #define CLI_WRITE_IDLE_END_MS 2000U   /* 主机“发送文件”前后常有停顿 */
 #define CLI_WRITE_HARD_TO_MS  180000U
@@ -146,12 +146,14 @@ static uint8_t cli_write_begin(const char *name, uint32_t fixed_size)
     s_line[0] = '\0';
     s_line_active = 0U;
     bsp_lvgl_pause(); /* 避免与 Flash 抢 SPI0 */
+    /* DMA1_CH2 循环收 USART；期间 Flash 自动改轮询，保证不丢字节 */
+    bsp_usart_rx_dma_highspeed_enter();
 
     if(0U != s_wf_auto) {
-        printf("SendBinary NOW (raw). Idle %ums => auto size. max=%lu\r\n",
+        printf("SendBinary NOW (DMA RX). Idle %ums => auto size. max=%lu\r\n",
                (unsigned)CLI_WRITE_IDLE_END_MS, (unsigned long)s_wf_max);
     } else {
-        printf("SendBinary %lu bytes NOW (raw, no echo)\r\n", (unsigned long)s_wf_max);
+        printf("SendBinary %lu bytes NOW (DMA RX, no echo)\r\n", (unsigned long)s_wf_max);
     }
     return 1U;
 }
@@ -341,6 +343,7 @@ static void cli_exit_update_time(void)
 
 static void cli_exit_write_file(const char *msg)
 {
+    bsp_usart_rx_dma_highspeed_exit();
     bsp_efs_abort_write();
     bsp_lvgl_resume();
     s_st = CLI_ST_ROOT;
@@ -410,6 +413,7 @@ static void cli_write_finish(void)
         cli_exit_write_file("WriteFile FAIL (commit)");
         return;
     }
+    bsp_usart_rx_dma_highspeed_exit();
     printf("WriteFile OK name=%s start=0x%08lX end=0x%08lX size=%lu\r\n",
            s_wf_name,
            (unsigned long)s_wf_start,
@@ -421,29 +425,59 @@ static void cli_write_finish(void)
     s_line_active = 0U;
 }
 
-static void cli_feed_write_data(uint8_t ch)
+/*!
+    \brief  DMA 环缓批量取数 → 组包写 EFS（WriteFile 全速路径）
+*/
+static void cli_write_pump(void)
 {
-    s_wf_last_rx_ms = sys_tick_get();
-    s_last_rx_ms = s_wf_last_rx_ms;
+    uint32_t room;
+    uint32_t n;
+    uint32_t remain;
 
-    if(s_wf_got >= s_wf_max) {
-        cli_exit_write_file("WriteFile FAIL (overflow)");
-        return;
-    }
-
-    s_wf_buf[s_wf_buf_len++] = ch;
-    s_wf_got++;
-
-    /* 缓冲满才写 Flash；擦写前尽量让 IRQ 继续收串口 */
-    if(s_wf_buf_len >= CLI_WRITE_CHUNK) {
-        cli_write_flush_buf();
-        if(CLI_ST_ROOT == s_st) {
+    while(CLI_ST_WRITE_DATA == s_st) {
+        if(s_wf_got >= s_wf_max) {
+            if(0U == s_wf_auto) {
+                cli_write_finish();
+            } else {
+                cli_exit_write_file("WriteFile FAIL (overflow)");
+            }
             return;
         }
-    }
 
-    if((0U == s_wf_auto) && (s_wf_got >= s_wf_max)) {
-        cli_write_finish();
+        room = CLI_WRITE_CHUNK - (uint32_t)s_wf_buf_len;
+        remain = s_wf_max - s_wf_got;
+        if(room > remain) {
+            room = remain;
+        }
+        if(0U == room) {
+            cli_write_flush_buf();
+            if(CLI_ST_ROOT == s_st) {
+                return;
+            }
+            continue;
+        }
+
+        n = bsp_usart_read(&s_wf_buf[s_wf_buf_len], room);
+        if(0U == n) {
+            break;
+        }
+
+        s_wf_buf_len = (uint16_t)(s_wf_buf_len + n);
+        s_wf_got += n;
+        s_wf_last_rx_ms = sys_tick_get();
+        s_last_rx_ms = s_wf_last_rx_ms;
+
+        if(s_wf_buf_len >= CLI_WRITE_CHUNK) {
+            cli_write_flush_buf();
+            if(CLI_ST_ROOT == s_st) {
+                return;
+            }
+        }
+
+        if((0U == s_wf_auto) && (s_wf_got >= s_wf_max)) {
+            cli_write_finish();
+            return;
+        }
     }
 }
 
@@ -475,10 +509,7 @@ static void cli_submit_line(void)
 
 static void cli_feed_byte(uint8_t ch)
 {
-    if(CLI_ST_WRITE_DATA == s_st) {
-        cli_feed_write_data(ch);
-        return;
-    }
+    /* WriteFile 走 cli_write_pump 批量路径，不在此逐字节处理 */
 
     /* ROOT：非文本直接丢弃，避免上位机误发 BIN 刷 Unknown */
     if((CLI_ST_ROOT == s_st) &&
@@ -532,7 +563,6 @@ void app_cli_init(void)
 void app_cli_task(void)
 {
     uint8_t ch;
-    uint32_t n;
 
     bsp_usart_poll_rx();
 
@@ -541,28 +571,26 @@ void app_cli_task(void)
         cli_exit_update_time();
     }
 
-    /* 先尽量抽干 RX，再判断空闲结束（避免边收边误判结束） */
-    n = 0U;
-    while(0U != bsp_usart_getc(&ch)) {
-        cli_feed_byte(ch);
-        n++;
-        /* 写文件时多抽一些，降低丢包 */
-        if((CLI_ST_WRITE_DATA == s_st) && (n >= 4096U)) {
-            break;
+    if(CLI_ST_WRITE_DATA == s_st) {
+        /* DMA 环 → 4KB 组包写 Flash；先抽干再判空闲结束 */
+        cli_write_pump();
+        if(CLI_ST_WRITE_DATA == s_st) {
+            if(0U != sys_tick_expired(s_wf_session_ms, CLI_WRITE_HARD_TO_MS)) {
+                cli_exit_write_file("ExitWriteFile (hard timeout)");
+            } else if(0U == s_wf_got) {
+                if(0U != sys_tick_expired(s_wf_session_ms, CLI_WRITE_START_TO_MS)) {
+                    cli_exit_write_file("ExitWriteFile (no data)");
+                }
+            } else if((0U != s_wf_auto) && (0U != s_wf_last_rx_ms) &&
+                      (0U != sys_tick_expired(s_wf_last_rx_ms, CLI_WRITE_IDLE_END_MS))) {
+                cli_write_finish();
+            }
         }
+        return;
     }
 
-    if(CLI_ST_WRITE_DATA == s_st) {
-        if(0U != sys_tick_expired(s_wf_session_ms, CLI_WRITE_HARD_TO_MS)) {
-            cli_exit_write_file("ExitWriteFile (hard timeout)");
-        } else if(0U == s_wf_got) {
-            if(0U != sys_tick_expired(s_wf_session_ms, CLI_WRITE_START_TO_MS)) {
-                cli_exit_write_file("ExitWriteFile (no data)");
-            }
-        } else if((0U != s_wf_auto) && (0U != s_wf_last_rx_ms) &&
-                  (0U != sys_tick_expired(s_wf_last_rx_ms, CLI_WRITE_IDLE_END_MS))) {
-            cli_write_finish();
-        }
+    while(0U != bsp_usart_getc(&ch)) {
+        cli_feed_byte(ch);
     }
 
     if((CLI_ST_ROOT == s_st) || (CLI_ST_UPDATE_TIME == s_st)) {

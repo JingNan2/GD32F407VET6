@@ -4,6 +4,7 @@
 */
 
 #include "bsp_spi0_bus.h"
+#include "bsp_usart.h"
 #include "board.h"
 #include "os.h"
 
@@ -233,6 +234,36 @@ uint8_t bsp_spi0_bus_dma_xfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
     if(NULL == rx) {
         rx = &s_dummy;
         use_dummy_rx = 1U;
+    }
+
+    /*
+     * WriteFile 期间 USART0 RX 占用 DMA1_CH2：Flash 改全双工轮询，
+     * 避免拆掉串口循环 DMA 导致丢包。
+     */
+    if(0U != bsp_usart_rx_dma_is_active()) {
+        uint32_t i;
+        uint32_t spi = BOARD_SPI_FLASH;
+        for(i = 0U; i < len; i++) {
+            uint8_t b;
+            timeout = DMA_TIMEOUT;
+            while(RESET == spi_i2s_flag_get(spi, SPI_FLAG_TBE)) {
+                if(0U == (--timeout)) {
+                    return SPI0_BUS_ERROR;
+                }
+            }
+            spi_i2s_data_transmit(spi, (uint16_t)(use_dummy_tx ? s_tx_ff : tx_ptr[i]));
+            timeout = DMA_TIMEOUT;
+            while(RESET == spi_i2s_flag_get(spi, SPI_FLAG_RBNE)) {
+                if(0U == (--timeout)) {
+                    return SPI0_BUS_ERROR;
+                }
+            }
+            b = (uint8_t)spi_i2s_data_receive(spi);
+            if(0U == use_dummy_rx) {
+                rx[i] = b;
+            }
+        }
+        return SPI0_BUS_OK;
     }
 
     spi_dma_disable(BOARD_SPI_FLASH, SPI_DMA_TRANSMIT);
