@@ -10,7 +10,7 @@
       <TargetName>Target_1</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>6220000::V6.22::ARMCLANG</pCCUsed>
+      <pCCUsed>6140001::V6.14.1::ARMCLANG</pCCUsed>
       <uAC6>1</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -186,7 +186,6 @@
             <RvdsVP>2</RvdsVP>
             <RvdsMve>0</RvdsMve>
             <RvdsCdeCp>0</RvdsCdeCp>
-            <nBranchProt>0</nBranchProt>
             <hadIRAM2>1</hadIRAM2>
             <hadIROM2>0</hadIROM2>
             <StupSel>8</StupSel>
@@ -340,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>GD32F407,HXTAL_VALUE=8000000,USE_USB_FS,LV_CONF_INCLUDE_SIMPLE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\CMSIS;..\CMSIS\GD\GD32F4xx\Include;..\FWLIB\GD32F4xx_standard_peripheral\Include;..\User;..\Platform;..\Platform\usb;..\OS;..\APP;..\ThirdParty;..\ThirdParty\lvgl;..\ThirdParty\FreeRTOS\Source\include;..\ThirdParty\FreeRTOS\Source\portable\GCC\ARM_CM4F;..\FWLIB\GD32F4xx_usb_library\driver\Include;..\FWLIB\GD32F4xx_usb_library\device\core\Include;..\FWLIB\GD32F4xx_usb_library\device\class\msc\Include;..\FWLIB\GD32F4xx_usb_library\ustd\common;..\FWLIB\GD32F4xx_usb_library\ustd\class\msc</IncludePath>
+              <IncludePath>..\CMSIS;..\CMSIS\GD\GD32F4xx\Include;..\FWLIB\GD32F4xx_standard_peripheral\Include;..\User;..\Platform;..\Platform\usb;..\OS;..\APP;..\ThirdParty;..\ThirdParty\fatfs\inc;..\ThirdParty\lvgl;..\ThirdParty\FreeRTOS\Source\include;..\ThirdParty\FreeRTOS\Source\portable\GCC\ARM_CM4F;..\FWLIB\GD32F4xx_usb_library\driver\Include;..\FWLIB\GD32F4xx_usb_library\device\core\Include;..\FWLIB\GD32F4xx_usb_library\device\class\msc\Include;..\FWLIB\GD32F4xx_usb_library\ustd\common;..\FWLIB\GD32F4xx_usb_library\ustd\class\msc</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -433,6 +432,11 @@
               <FileName>bsp_efs.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Platform\bsp_efs.c</FilePath>
+            </File>
+            <File>
+              <FileName>bsp_fatfs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Platform\bsp_fatfs.c</FilePath>
             </File>
             <File>
               <FileName>bsp_lv_fs_efs.c</FileName>
@@ -1877,12 +1881,37 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>FatFs</GroupName>
+          <Files>
+            <File>
+              <FileName>ff.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\ThirdParty\fatfs\src\ff.c</FilePath>
+            </File>
+            <File>
+              <FileName>diskio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\ThirdParty\fatfs\src\diskio.c</FilePath>
+            </File>
+            <File>
+              <FileName>ffunicode.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\ThirdParty\fatfs\src\ffunicode.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>APP</GroupName>
           <Files>
             <File>
               <FileName>app_cli.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\APP\app_cli.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_ui_files.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\APP\app_ui_files.c</FilePath>
             </File>
             <File>
               <FileName>app.c</FileName>

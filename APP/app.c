@@ -12,9 +12,11 @@
 #include "bsp_usb_msc.h"
 #include "bsp_spi_flash.h"
 #include "bsp_efs.h"
+#include "bsp_fatfs.h"
 #include "bsp_st7789.h"
 #include "bsp_cst816.h"
 #include "bsp_lvgl.h"
+#include "app_ui_files.h"
 #include "app_cli.h"
 #include "systick.h"
 #include <stdio.h>
@@ -109,15 +111,22 @@ static void tf_card_selftest(void)
     bsp_led_write(0x03U); /* 低 2 灯：仅 SD 就绪，无 USB 盘 */
     bsp_nixie_show_right(0U, 0U);
     printf("[USB] MSC disabled (MCU-only TF access)\r\n");
+    /* MCU 独占 TF：挂 FatFs，刷新文件 UI */
+    if(BSP_FATFS_OK == bsp_fatfs_remount()) {
+        bsp_fatfs_list_root();
+        app_ui_files_request_refresh();
+    }
 #endif
 }
 
 static void tf_card_on_remove(void)
 {
     printf("[SD] removed\r\n");
+    bsp_fatfs_umount();
     bsp_sd_deinit();
     s_usb_msc_on = 0U; /* MSC 无卡可读；下次插入再挂 */
     sd_show_absent();
+    app_ui_files_request_refresh();
     bsp_buzzer_beep(40U);
 }
 

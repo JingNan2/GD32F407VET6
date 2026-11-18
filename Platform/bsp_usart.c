@@ -14,45 +14,46 @@
 
 #define USART_PRINTF_BUF_SIZE  256U
 #define USART_DMA_TIMEOUT      0x1FFFFFU
-/* 115200 下扇区擦除可达数百 ms，必须能扛住突发；过小会导致 WriteFile 丢字节 */
-#define USART_RX_RING_SIZE     8192U
+/* 460800 约 46KB/s；扇区擦除可达数百 ms，环缓需扛住突发 */
+#define USART_RX_RING_SIZE     16384U
 
 static uint8_t  s_printf_buf[USART_PRINTF_BUF_SIZE];
 static uint16_t s_printf_len = 0U;
 
 static uint8_t  s_rx_ring[USART_RX_RING_SIZE];
-static volatile uint16_t s_rx_head = 0U;
-static volatile uint16_t s_rx_tail = 0U;
+static volatile uint32_t s_rx_head = 0U;
+static volatile uint32_t s_rx_tail = 0U;
 
 static volatile uint8_t s_rx_dma_on = 0U;
-static volatile uint16_t s_rx_dma_tail = 0U;
+static volatile uint32_t s_rx_dma_tail = 0U;
 
 static void rx_push(uint8_t ch)
 {
-    uint16_t next = (uint16_t)((s_rx_head + 1U) % USART_RX_RING_SIZE);
+    uint32_t next = (s_rx_head + 1U) % USART_RX_RING_SIZE;
     if(next != s_rx_tail) {
         s_rx_ring[s_rx_head] = ch;
         s_rx_head = next;
     }
 }
 
-static uint16_t rx_dma_write_pos(void)
+static uint32_t rx_dma_write_pos(void)
 {
     uint32_t left;
 
     left = dma_transfer_number_get(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH);
-    if(left > USART_RX_RING_SIZE) {
-        left = USART_RX_RING_SIZE;
+    /* CNT==SIZE 或异常：视为写指针在 0；CNT==0 也归一到 0，避免 head==SIZE */
+    if((0U == left) || (left >= USART_RX_RING_SIZE)) {
+        return 0U;
     }
-    return (uint16_t)(USART_RX_RING_SIZE - (uint16_t)left);
+    return (USART_RX_RING_SIZE - left);
 }
 
 static uint32_t rx_dma_read(uint8_t *buf, uint32_t max_len)
 {
     uint32_t got = 0U;
-    uint16_t head;
-    uint16_t tail;
-    uint16_t chunk;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t chunk;
 
     if((NULL == buf) || (0U == max_len) || (0U == s_rx_dma_on)) {
         return 0U;
@@ -60,19 +61,22 @@ static uint32_t rx_dma_read(uint8_t *buf, uint32_t max_len)
 
     head = rx_dma_write_pos();
     tail = s_rx_dma_tail;
+    if(tail >= USART_RX_RING_SIZE) {
+        tail = 0U;
+    }
 
     while((got < max_len) && (tail != head)) {
         if(tail < head) {
-            chunk = (uint16_t)(head - tail);
+            chunk = head - tail;
         } else {
-            chunk = (uint16_t)(USART_RX_RING_SIZE - tail);
+            chunk = USART_RX_RING_SIZE - tail;
         }
-        if(chunk > (uint16_t)(max_len - got)) {
-            chunk = (uint16_t)(max_len - got);
+        if(chunk > (max_len - got)) {
+            chunk = max_len - got;
         }
         (void)memcpy(buf + got, &s_rx_ring[tail], chunk);
         got += chunk;
-        tail = (uint16_t)((tail + chunk) % USART_RX_RING_SIZE);
+        tail = (tail + chunk) % USART_RX_RING_SIZE;
     }
     s_rx_dma_tail = tail;
     return got;
@@ -87,10 +91,10 @@ static void usart_gpio_config(void)
     gpio_af_set(BOARD_USART_GPIO_PORT, BOARD_USART_AF, BOARD_USART_RX_PIN);
 
     gpio_mode_set(BOARD_USART_GPIO_PORT, GPIO_MODE_AF, GPIO_PUPD_PULLUP, BOARD_USART_TX_PIN);
-    gpio_output_options_set(BOARD_USART_GPIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, BOARD_USART_TX_PIN);
+    gpio_output_options_set(BOARD_USART_GPIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, BOARD_USART_TX_PIN);
 
     gpio_mode_set(BOARD_USART_GPIO_PORT, GPIO_MODE_AF, GPIO_PUPD_PULLUP, BOARD_USART_RX_PIN);
-    gpio_output_options_set(BOARD_USART_GPIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, BOARD_USART_RX_PIN);
+    gpio_output_options_set(BOARD_USART_GPIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_MAX, BOARD_USART_RX_PIN);
 
     usart_deinit(BOARD_USART);
     usart_baudrate_set(BOARD_USART, BOARD_USART_BAUDRATE);
@@ -276,6 +280,7 @@ void bsp_usart_rx_dma_highspeed_enter(void)
     usart_interrupt_enable(BOARD_USART, USART_INT_IDLE);
 
     s_rx_dma_on = 1U;
+    printf("[USART] RX DMA ON  CH2 taken (WriteFile)\r\n");
 }
 
 void bsp_usart_rx_dma_highspeed_exit(void)
@@ -286,9 +291,12 @@ void bsp_usart_rx_dma_highspeed_exit(void)
 
     usart_interrupt_disable(BOARD_USART, USART_INT_IDLE);
 
-    /* 与软件环共用 s_rx_ring：停 DMA 后直接丢弃残留 BIN，避免污染命令行 */
+    /* 停 RX DMA 并 deinit CH2，把通道交还给 SPI0(Flash/LCD) */
     dma_channel_disable(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH);
     usart_dma_receive_config(BOARD_USART, USART_RECEIVE_DMA_DISABLE);
+    dma_flag_clear(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH, DMA_FLAG_FTF);
+    dma_flag_clear(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH, DMA_FLAG_HTF);
+    dma_flag_clear(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH, DMA_FLAG_TAE);
     dma_deinit(BOARD_USART_DMA, BOARD_USART_DMA_RX_CH);
 
     if(RESET != usart_flag_get(BOARD_USART, USART_FLAG_ORERR)) {
@@ -304,44 +312,80 @@ void bsp_usart_rx_dma_highspeed_exit(void)
     s_rx_head = 0U;
     s_rx_tail = 0U;
     usart_interrupt_enable(BOARD_USART, USART_INT_RBNE);
+    printf("[USART] RX DMA OFF CH2 free -> SPI/LCD\r\n");
+}
+
+/*!
+    \brief  抽干 RX + 清 OR/NE/FE，避免错波特率噪声把 RBNE 中打断满导致“假死”
+*/
+static void usart_rx_drain_errors(void)
+{
+    uint32_t guard = 64U;
+
+    (void)USART_STAT0(BOARD_USART);
+    while((RESET != usart_flag_get(BOARD_USART, USART_FLAG_RBNE)) && (0U != guard)) {
+        (void)usart_data_receive(BOARD_USART);
+        guard--;
+    }
+    if(RESET != usart_flag_get(BOARD_USART, USART_FLAG_ORERR)) {
+        (void)USART_STAT0(BOARD_USART);
+        (void)usart_data_receive(BOARD_USART);
+        usart_flag_clear(BOARD_USART, USART_FLAG_ORERR);
+    }
+    if(RESET != usart_flag_get(BOARD_USART, USART_FLAG_NERR)) {
+        usart_flag_clear(BOARD_USART, USART_FLAG_NERR);
+    }
+    if(RESET != usart_flag_get(BOARD_USART, USART_FLAG_FERR)) {
+        usart_flag_clear(BOARD_USART, USART_FLAG_FERR);
+    }
 }
 
 void bsp_usart_rx_irq_handler(void)
 {
+    uint32_t n = 0U;
+
     if(0U != s_rx_dma_on) {
         if(RESET != usart_interrupt_flag_get(BOARD_USART, USART_INT_FLAG_IDLE)) {
-            /* 读 DATA 清 IDLE（GD32：先读 STAT 再读 DATA） */
             (void)USART_STAT0(BOARD_USART);
             (void)usart_data_receive(BOARD_USART);
             usart_interrupt_flag_clear(BOARD_USART, USART_INT_FLAG_IDLE);
         }
         if(RESET != usart_interrupt_flag_get(BOARD_USART, USART_INT_FLAG_RBNE_ORERR)) {
-            (void)usart_data_receive(BOARD_USART);
+            usart_rx_drain_errors();
             usart_interrupt_flag_clear(BOARD_USART, USART_INT_FLAG_RBNE_ORERR);
         }
         return;
     }
 
-    if(RESET != usart_interrupt_flag_get(BOARD_USART, USART_INT_FLAG_RBNE)) {
+    /* 一次 IRQ 最多收 32 字节，其余留给主循环，防止中断占死 CPU */
+    while((RESET != usart_flag_get(BOARD_USART, USART_FLAG_RBNE)) && (n < 32U)) {
         rx_push((uint8_t)usart_data_receive(BOARD_USART));
+        n++;
     }
-    if(RESET != usart_interrupt_flag_get(BOARD_USART, USART_INT_FLAG_RBNE_ORERR)) {
-        (void)usart_data_receive(BOARD_USART);
+    if((RESET != usart_interrupt_flag_get(BOARD_USART, USART_INT_FLAG_RBNE_ORERR)) ||
+       (RESET != usart_flag_get(BOARD_USART, USART_FLAG_ORERR)) ||
+       (RESET != usart_flag_get(BOARD_USART, USART_FLAG_FERR)) ||
+       (RESET != usart_flag_get(BOARD_USART, USART_FLAG_NERR))) {
+        usart_rx_drain_errors();
         usart_interrupt_flag_clear(BOARD_USART, USART_INT_FLAG_RBNE_ORERR);
     }
 }
 
 void bsp_usart_poll_rx(void)
 {
+    uint32_t n = 0U;
+
     if(0U != s_rx_dma_on) {
         return;
     }
-    while(RESET != usart_flag_get(BOARD_USART, USART_FLAG_RBNE)) {
+    while((RESET != usart_flag_get(BOARD_USART, USART_FLAG_RBNE)) && (n < 256U)) {
         rx_push((uint8_t)usart_data_receive(BOARD_USART));
+        n++;
     }
-    if(RESET != usart_flag_get(BOARD_USART, USART_FLAG_ORERR)) {
-        (void)usart_data_receive(BOARD_USART);
-        usart_flag_clear(BOARD_USART, USART_FLAG_ORERR);
+    if((RESET != usart_flag_get(BOARD_USART, USART_FLAG_ORERR)) ||
+       (RESET != usart_flag_get(BOARD_USART, USART_FLAG_FERR)) ||
+       (RESET != usart_flag_get(BOARD_USART, USART_FLAG_NERR))) {
+        usart_rx_drain_errors();
     }
 }
 
@@ -357,7 +401,7 @@ uint8_t bsp_usart_getc(uint8_t *ch)
         return 0U;
     }
     *ch = s_rx_ring[s_rx_tail];
-    s_rx_tail = (uint16_t)((s_rx_tail + 1U) % USART_RX_RING_SIZE);
+    s_rx_tail = (s_rx_tail + 1U) % USART_RX_RING_SIZE;
     return 1U;
 }
 
@@ -375,7 +419,7 @@ uint32_t bsp_usart_read(uint8_t *buf, uint32_t max_len)
 
     while((got < max_len) && (s_rx_tail != s_rx_head)) {
         buf[got++] = s_rx_ring[s_rx_tail];
-        s_rx_tail = (uint16_t)((s_rx_tail + 1U) % USART_RX_RING_SIZE);
+        s_rx_tail = (s_rx_tail + 1U) % USART_RX_RING_SIZE;
     }
     return got;
 }

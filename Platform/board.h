@@ -4,15 +4,15 @@
 #include "gd32f4xx.h"
 
 /* ========== 调试串口 USART0（官方 Printf + DMA 例程） ========== */
-/* PA9=TX  PA10=RX  AF7  115200 8N1 */
+/* PA9=TX  PA10=RX  AF7  460800 8N1（921600 在本板会 RX 中断风暴卡死，勿用） */
 /* TX: DMA1_CH7 SUBPERI4
- * RX: DMA1_CH2 SUBPERI4 —— 仅 WriteFile 高速模式占用；平时 CH2 给 SPI0 Flash/LCD
- *     高速模式期间 Flash 走轮询，避免与 USART RX DMA 抢 CH2
+ * RX: DMA1_CH2 SUBPERI4 —— 仅 /WriteFile 期间占用；结束后 deinit 还给 SPI0(Flash/LCD)
+ *     传文件时：暂停 LVGL；Flash 写改轮询；完成后 resume 屏幕
  */
 #define BOARD_USART                 USART0
 #define BOARD_USART_CLK             RCU_USART0
 #define BOARD_USART_IRQn            USART0_IRQn
-#define BOARD_USART_BAUDRATE        115200U
+#define BOARD_USART_BAUDRATE        460800U
 #define BOARD_USART_GPIO_PORT       GPIOA
 #define BOARD_USART_GPIO_CLK        RCU_GPIOA
 #define BOARD_USART_TX_PIN          GPIO_PIN_9

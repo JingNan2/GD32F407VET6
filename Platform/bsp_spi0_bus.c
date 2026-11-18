@@ -105,6 +105,11 @@ uint8_t bsp_spi0_bus_acquire(spi0_bus_owner_t owner)
         bsp_spi0_bus_init();
     }
 
+    /* WriteFile 占用 DMA1_CH2：禁止 LCD 抢总线（Flash 仍可用，走轮询） */
+    if((SPI0_BUS_LCD == owner) && (0U != bsp_usart_rx_dma_is_active())) {
+        return SPI0_BUS_ERROR;
+    }
+
     if(SPI0_BUS_FLASH == owner) {
         s_flash_want = 1U;
         /* 调度器未跑时 os_yield 为空操作，必须带超时，否则会死等卡死 */

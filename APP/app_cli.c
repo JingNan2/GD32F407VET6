@@ -8,6 +8,7 @@
 #include "bsp_rtc.h"
 #include "bsp_efs.h"
 #include "bsp_lvgl.h"
+#include "app_ui_files.h"
 #include "systick.h"
 #include <stdio.h>
 #include <string.h>
@@ -145,15 +146,21 @@ static uint8_t cli_write_begin(const char *name, uint32_t fixed_size)
     s_len = 0U;
     s_line[0] = '\0';
     s_line_active = 0U;
-    bsp_lvgl_pause(); /* 避免与 Flash 抢 SPI0 */
-    /* DMA1_CH2 循环收 USART；期间 Flash 自动改轮询，保证不丢字节 */
+
+    /*
+     * 传文件会话硬件策略：
+     * 1) 先暂停 LVGL（屏幕让出 SPI0）
+     * 2) USART 占用 DMA1_CH2 循环收
+     * 3) 期间 Flash 写自动改轮询；结束后再把 CH2/刷屏权还给屏幕
+     */
+    bsp_lvgl_pause();
     bsp_usart_rx_dma_highspeed_enter();
 
     if(0U != s_wf_auto) {
-        printf("SendBinary NOW (DMA RX). Idle %ums => auto size. max=%lu\r\n",
+        printf("SendBinary NOW (UART DMA). Idle %ums => auto size. max=%lu\r\n",
                (unsigned)CLI_WRITE_IDLE_END_MS, (unsigned long)s_wf_max);
     } else {
-        printf("SendBinary %lu bytes NOW (DMA RX, no echo)\r\n", (unsigned long)s_wf_max);
+        printf("SendBinary %lu bytes NOW (UART DMA, no echo)\r\n", (unsigned long)s_wf_max);
     }
     return 1U;
 }
@@ -341,11 +348,18 @@ static void cli_exit_update_time(void)
     printf("ExitUpdateTime\r\n");
 }
 
+static void cli_write_release_hw(void)
+{
+    /* 顺序固定：先放 CH2，再恢复屏幕，并刷新文件列表 */
+    bsp_usart_rx_dma_highspeed_exit();
+    bsp_lvgl_resume();
+    app_ui_files_request_refresh();
+}
+
 static void cli_exit_write_file(const char *msg)
 {
-    bsp_usart_rx_dma_highspeed_exit();
     bsp_efs_abort_write();
-    bsp_lvgl_resume();
+    cli_write_release_hw();
     s_st = CLI_ST_ROOT;
     s_len = 0U;
     s_line[0] = '\0';
@@ -413,13 +427,13 @@ static void cli_write_finish(void)
         cli_exit_write_file("WriteFile FAIL (commit)");
         return;
     }
-    bsp_usart_rx_dma_highspeed_exit();
+    /* 落盘完成后再让出 DMA/屏幕，避免收尾阶段丢字节 */
+    cli_write_release_hw();
     printf("WriteFile OK name=%s start=0x%08lX end=0x%08lX size=%lu\r\n",
            s_wf_name,
            (unsigned long)s_wf_start,
            (unsigned long)(s_wf_start + s_wf_got),
            (unsigned long)s_wf_got);
-    bsp_lvgl_resume();
     s_st = CLI_ST_ROOT;
     s_len = 0U;
     s_line_active = 0U;
